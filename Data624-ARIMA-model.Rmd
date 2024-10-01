@@ -1,0 +1,107 @@
+---
+title: "Data-624-ARIMA"
+author: "Adriana Medina, Johnny Rodriguez, Semyon Toybis"
+date: "2024-10-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r load-libraries}
+library(ggplot2)
+library(tsibble)
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(tseries)
+library(fabletools)
+library(fable)
+library(feasts)
+```
+
+# Import data
+
+```{r import-data}
+raw_data_path<-("https://raw.githubusercontent.com/amedina613/Data624-ARIMA-group/refs/heads/main/UNRATE.csv")
+
+unrate_raw <- read.csv(raw_data_path)
+head(unrate_raw)
+```
+
+```{r convert-to-tsibble}
+# Convert the date column to date format
+unrate_raw$DATE <- as.Date(unrate_raw$DATE, format="%Y-%m-%d")
+# Convert data to tsibble
+unrate_tsibble <- unrate_raw |>
+  as_tsibble(index = DATE)
+
+head(unrate_tsibble)
+```
+
+```{r plot-unrate}
+autoplot(unrate_tsibble, UNRATE) + 
+  labs(title = "Unemployment Rate Time Series",
+       x = "Year", y = "Unemployment Rate")
+```
+
+This graph clearly shows noticeable fluctuations and peaks.
+
+# Stabilize variance with Box-Cox
+
+```{r find-lambda}
+#find the optimal lambda value using the guerrero feature
+lambda <- unrate_tsibble %>%
+  features(UNRATE, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+print(lambda)
+```
+
+```{r box-cox-transformation}
+# apply box-cox transformation
+unrate_transformed <- unrate_tsibble %>%
+  mutate(UNRATE_trans = box_cox(UNRATE, lambda))
+
+# plot the transformed series using autoplot
+autoplot(unrate_transformed, UNRATE_trans) + 
+  labs(title = "Box-Cox Transformed Unemployment Rate",
+       x = "Year", y = "Transformed Unemployment Rate")
+```
+
+# Test for Stationarity
+
+```{r}
+# perform ADF test
+adf_test <- adf.test(unrate_transformed$UNRATE_trans)
+print(adf_test)
+
+```
+
+The results of the ADF test show a p-value of 0.01, which is less than 0.05. This could indicate that it's stationary. For further inspection, we can inspect the autocorrelation function
+
+# Inspect the autocorrelation function
+
+```{r acf-plot}
+acf(unrate_transformed$UNRATE_trans)
+```
+
+There is a slow decay, which indicates differencing is still needed.
+
+# Apply Differencing
+
+```{r}
+# apply first-order differencing 
+unrate_diff <- unrate_transformed %>%
+  mutate(UNRATE_diff = difference(UNRATE_trans, lag = 1))
+
+# plot the differenced series
+autoplot(unrate_diff, UNRATE_diff) +
+  labs(title = "Differenced Box-Cox Transformed Unemployment Rate")
+
+```
+
+This series is now stationary.
