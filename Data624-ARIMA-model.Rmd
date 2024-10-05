@@ -1,16 +1,31 @@
 ---
-title: "Data-624-ARIMA"
+title: "Data 624 Non Seasonal ARIMA Demo"
 author: "Adriana Medina, Johnny Rodriguez, Semyon Toybis"
-date: "2024-10-01"
-output: html_document
+date: "October 8, 2024"
+output:
+  html_document:
+    code_folding: hide
+    toc: false
+    toc_float: false
+    toc_depth: 1
+    number_sections: false
+    highlight: pygments
+    theme: cerulean
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-## R Markdown
+</br>
 
+# {.tabset}
+
+## Plot & Transform
+
+**Source Data**
+
+We use federal unemployment rate data located at FRED -  https://fred.stlouisfed.org/series/UNRATE.
 ```{r load-libraries}
 library(ggplot2)
 library(tsibble)
@@ -21,9 +36,17 @@ library(tseries)
 library(fabletools)
 library(fable)
 library(feasts)
+library(kableExtra)
+library(dplyr)
 ```
 
-# Import data
+
+</br>
+
+---
+
+### Import data
+
 
 ```{r import-data}
 raw_data_path<-("https://raw.githubusercontent.com/amedina613/Data624-ARIMA-group/refs/heads/main/UNRATE.csv")
@@ -34,23 +57,32 @@ head(unrate_raw)
 
 ```{r convert-to-tsibble}
 # Convert the date column to date format
-unrate_raw$DATE <- as.Date(unrate_raw$DATE, format="%Y-%m-%d")
+#unrate_raw$DATE <- as.Date(unrate_raw$DATE, format="%Y-%m-%d")
 # Convert data to tsibble
-unrate_tsibble <- unrate_raw |>
-  as_tsibble(index = DATE)
+#unrate_tsibble <- unrate_raw |>
+#  as_tsibble(index = DATE)
 
-head(unrate_tsibble)
+#head(unrate_tsibble)
+
+unrate_raw$monthFormat <- yearmonth(unrate_raw$DATE)
+unrate_tsibble <- unrate_raw |> select(-DATE) |> as_tsibble(index = monthFormat)
+
 ```
 
 ```{r plot-unrate}
 autoplot(unrate_tsibble, UNRATE) + 
   labs(title = "Unemployment Rate Time Series",
-       x = "Year", y = "Unemployment Rate")
+       x = "Month", y = "Unemployment Rate")+
+  theme_minimal()
 ```
 
 This graph clearly shows noticeable fluctuations and peaks.
 
-# Stabilize variance with Box-Cox
+</br>
+
+---
+
+### Stabilize variance with Box-Cox
 
 ```{r find-lambda}
 #find the optimal lambda value using the guerrero feature
@@ -69,10 +101,15 @@ unrate_transformed <- unrate_tsibble %>%
 # plot the transformed series using autoplot
 autoplot(unrate_transformed, UNRATE_trans) + 
   labs(title = "Box-Cox Transformed Unemployment Rate",
-       x = "Year", y = "Transformed Unemployment Rate")
+       x = "Month", y = "Transformed Unemployment Rate")+
+  theme_minimal()
 ```
 
-# Test for Stationarity
+</br>
+
+---
+
+### Test for Stationarity
 
 ```{r}
 # perform ADF test
@@ -83,7 +120,12 @@ print(adf_test)
 
 The results of the ADF test show a p-value of 0.01, which is less than 0.05. This could indicate that it's stationary. For further inspection, we can inspect the autocorrelation function
 
-# Inspect the autocorrelation function
+</br>
+
+---
+
+### Inspect the autocorrelation function
+
 
 ```{r acf-plot}
 acf(unrate_transformed$UNRATE_trans)
@@ -91,17 +133,219 @@ acf(unrate_transformed$UNRATE_trans)
 
 There is a slow decay, which indicates differencing is still needed.
 
-# Apply Differencing
+</br>
+
+---
+
+### Apply Differencing
+
 
 ```{r}
 # apply first-order differencing 
 unrate_diff <- unrate_transformed %>%
   mutate(UNRATE_diff = difference(UNRATE_trans, lag = 1))
 
+
+
 # plot the differenced series
 autoplot(unrate_diff, UNRATE_diff) +
-  labs(title = "Differenced Box-Cox Transformed Unemployment Rate")
+  labs(title = "Differenced Box-Cox Transformed Unemployment Rate")+
+  theme_minimal()
+
 
 ```
 
 This series is now stationary.
+
+---
+
+</br>
+
+
+## Fit & Check
+
+For the ARIMA model below, we are using the **original** unemployment rate values (unrate_tsibble) to demonstrate the non seasonal ARIMA model.
+
+</br>
+
+---
+
+
+### Plot the ACF & PACF
+
+We plot the ACF and PACF to determine appropriate values for the p (autoregressive) and q (moving average) parameters of an ARIMA model after differencing the time series to achieve stationarity. The differenced residuals are used to evaluate whether the data still exhibits patterns that need modeling or if it resembles white noise. 
+
+Both the ACF and PACF show minimal significant spikes, indicating a lack of strong correlations at different lags. This suggests that the appropriate model could be ARIMA(0,1,0), as there are no significant autoregressive or moving average components required after first-order differencing (d = 1). The residuals indicate that the time series is adequately modeled without additional AR or MA terms.
+
+
+```{r}
+
+unrate_tsibble |> select(UNRATE) |>
+gg_tsdisplay(difference(UNRATE), plot_type = "partial")
+
+```
+
+</br>
+
+---
+
+### Identify Model Candidates
+
+We fit multiple ARIMA models to the UNRATE time series to determine the best model for forecasting using fable.
+
+- The arima010 model fits an ARIMA(0, 1, 0) model (based on a manual check).
+- The stepwise model automatically selects the best ARIMA parameters using a stepwise algorithm.
+- The search model performs an search to find the optimal ARIMA configuration.
+
+</br>
+
+**ARIMA Candidates**
+
+The model function checks the manually selected ARIMA(0, 1, 0) model for fit as well surfacing two other well fitting models:  ARIMA (1, 1, 1) and seasonal ARIMA (1,1,1)(2,0,0)[12]
+
+```{r}
+
+unrate_fit <- unrate_tsibble |> 
+  model(
+    arima010 = ARIMA(UNRATE ~ pdq(0, 1,0)),
+    stepwise = ARIMA(UNRATE),
+    search = ARIMA(UNRATE, stepwise = FALSE))
+
+# Create table
+unrate_fit %>%
+  kable("html", caption = "ARIMA Model Candidates") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+</br>
+
+---
+
+### Check Model Fit & Select Model
+
+
+To determine the best model for forecasing, we focus on the AICc metric to select the model. Both Sigma2, which measures variance across the model, and log-likelyhood metric, which measures how well model fits the data, are very simmilar, the AICc points to the best candidate.  
+
+In this case, the ARIMA (1, 1, 1) model identified by the stepwise algorith appears to be the best fit.
+
+```{r}
+# Convert the model summary to a table, dropping the ar_roots and ma_roots columns
+unrate_summary <- glance(unrate_fit) %>%
+  select(-ar_roots, -ma_roots) %>%
+  arrange(AICc)
+
+# Create table
+unrate_summary %>%
+  kable("html", caption = "ARIMA Model Fits for Unemployment Rate") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "responsive"))
+
+```
+
+</br>
+
+---
+
+### Check Fit Residuals
+
+
+We check the residuals of an ARIMA model to ensure that they resemble white noise, indicating that the model has captured all the underlying patterns in the time series and that there is no remaining structure. 
+
+The residuals appear mostly random with no clear pattern, and the ACF shows no significant spikes beyond the confidence bounds, suggesting no significant autocorrelation left in the residuals. The histogram also indicates that the residuals are centered around zero. These observations suggest that the selected ARIMA model provides an adequate fit for the data, as the residuals do not exhibit systematic patterns.
+
+The significant spike / outlier in the residual occurs during the 2020 COVID pandemic.
+
+```{r}
+unrate_fit |>
+  select(stepwise)|>
+  gg_tsresiduals()
+```
+
+</br>
+
+---
+
+### Pormanteau Test
+
+The Portmanteau test is used to determine whether the residuals of an ARIMA model are independently distributed, testing for remaining autocorrelation. 
+
+In the result shown, the p-value is **0.9849195**, which is high. We fail to reject the null hypothesis, indicating that there is no significant autocorrelation present in the residuals. This implies that the ARIMA model has captured all the key patterns in the time series, and the residuals resemble white noise.
+
+
+```{r}
+
+portm <- augment(unrate_fit) |>
+  filter(.model == "stepwise") |>
+  features (.innov, ljung_box, lag = 10, dof = 2)
+
+
+portm %>%
+  kable("html", caption = "ARIMA Model Candidates") %>%
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped", "hover", "responsive"))
+
+```
+
+</br>
+
+---
+
+### Train & Test the ARIMA(1,1,1) model
+
+
+We perform a train-test forecast on the ARIMA(1,1,1) model allows to evaluate its effectiveness at capturing the underlying patterns in the time series and providing reliable forecasts. 
+
+
+In case, the model's predictive power forecasts well of a roughly 2 year period (24 monthly lags) before losing it predictive power and converging at a single value.  In ARIMA111 works well but the unemployment rate data is likely better suited for a rolling forecast of incremental interval of 24 or less.
+
+```{r}
+# Split the data 80/20
+n <- nrow(unrate_tsibble)
+train_size <- floor(0.8 * n)
+unrate_train <- unrate_tsibble[1:train_size, ]
+unrate_test <- unrate_tsibble[(train_size + 1):n, ]
+
+# Fit the ARIMA model to the training set
+unrate_fit <- unrate_train |>
+  model(stepwise = ARIMA(UNRATE ~ pdq(1,1,1)))
+
+# Forecast using the stepwise fitted model
+forecast_h <- n - train_size
+unrate_forecast <- unrate_fit |>
+  select(stepwise) |>
+  forecast(h = forecast_h)
+
+# Convert tsibble for plotting
+unrate_train_tbl <- unrate_train |>
+  as_tibble() |>
+  mutate(type = "Training")
+
+unrate_test_tbl <- unrate_test |>
+  as_tibble() |>
+  mutate(type = "Actual")
+
+unrate_forecast_tbl <- unrate_forecast |>
+  as_tibble() |>
+  mutate(type = "Forecast")
+
+# Combine training, actual, and forecast data
+combined_data <- bind_rows(
+  unrate_train_tbl %>%
+    select(monthFormat, UNRATE, type),
+  unrate_test_tbl %>%
+    select(monthFormat, UNRATE, type),
+  unrate_forecast_tbl %>%
+    select(monthFormat, UNRATE = .mean, type))
+
+# Plot
+ggplot(combined_data, aes(x = monthFormat, y = UNRATE, color = type)) +
+  geom_line() +
+  labs(title = "ARIMA(1,1,1) Model Forecast on Actual Data",
+       x = "Month",
+       y = "Unemployment Rate",
+       color = "Legend") +
+  theme_minimal()
+```
+
+
+</br>
+
+## Forecast & Measure
